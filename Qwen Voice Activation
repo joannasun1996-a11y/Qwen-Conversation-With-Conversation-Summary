@@ -1,8 +1,11 @@
 import sounddevice as sd
+import subprocess
 import whisper
 import scipy.io.wavfile as wav
 import numpy as np
-import os
+import smtplib
+import re
+from email.mime.text import MIMEText
 
 print("Loading Whisper...")
 model = whisper.load_model("base")
@@ -13,19 +16,29 @@ device = None
 devices = sd.query_devices()
 
 for i, d in enumerate(devices):
-    if "usb" in d['name'].lower():
+    if "usb" in d["name"].lower():
         device = i
-        print("Using mic:", d['name'], "id:", i)
+        print("Using mic:", d["name"], "id:", i)
         break
 
 if device is None:
     print("No USB microphone found")
     exit()
 
-# use correct samplerate automatically
-samplerate = int(sd.query_devices(device)['default_samplerate'])
+# -------- SETTINGS --------
 
-duration = 5
+samplerate = int(sd.query_devices(device)["default_samplerate"])
+duration = 15
+
+# -------- EMAIL SETTINGS --------
+
+EMAIL_ADDRESS = "YOUR_EMAIL@gmail.com"
+EMAIL_PASSWORD = "YOUR_APP_PASSWORD"
+RECIPIENT_EMAIL = "RECIPIENT_EMAIL@gmail.com"
+
+# -------- MEMORY --------
+
+conversation_history = ""
 
 print("Say 'hello' to start.")
 
@@ -44,29 +57,31 @@ while True:
 
     sd.wait()
 
-    # -------- VOLUME DEBUG --------
     audio = recording.flatten()
     volume = np.max(np.abs(audio))
 
     print("Volume:", volume)
 
-    # ignore silence
-    if volume < 0.02:
+    if volume < 0.2:
         print("Too quiet, ignoring...")
         continue
 
-    # normalize audio
     audio = audio / np.max(np.abs(audio))
 
     wav.write("temp.wav", samplerate, recording)
 
-    result = model.transcribe("temp.wav", fp16=False, language="en")
+    result = model.transcribe(
+        "temp.wav",
+        fp16=False,
+        language="en"
+    )
 
     text = result["text"].strip().lower()
 
     print("You said:", text)
 
     # -------- WAKE WORD --------
+
     if "hello" in text:
 
         print("Qwen activated. Start talking.")
@@ -84,13 +99,12 @@ while True:
 
             sd.wait()
 
-            # volume debug again
             audio = recording.flatten()
             volume = np.max(np.abs(audio))
 
             print("Volume:", volume)
 
-            if volume < 0.02:
+            if volume < 0.2:
                 print("Too quiet, ignoring...")
                 continue
 
@@ -98,7 +112,11 @@ while True:
 
             wav.write("temp.wav", samplerate, recording)
 
-            result = model.transcribe("temp.wav", fp16=False, language="en")
+            result = model.transcribe(
+                "temp.wav",
+                fp16=False,
+                language="en"
+            )
 
             user_text = result["text"].strip()
 
@@ -109,17 +127,115 @@ while True:
 
             print("Thinking...")
 
-            response = os.popen(
-                f'ollama run qwen2:1.5b "{user_text}"'
-            ).read()
+            # -------- CHAT MODEL --------
+
+            qwen_result = subprocess.run(
+                ["ollama", "run", "qwen3:0.6b", user_text],
+                capture_output=True,
+                text=True
+            )
+
+            response = qwen_result.stdout.strip()
 
             print("Qwen:", response)
 
-            # play through Q5 speaker (card 2)
-            os.system(
-                f'echo "{response}" | espeak --stdout | aplay -D plughw:2,0'
+            # -------- SAVE MEMORY --------
+
+            conversation_history += f"\nUser: {user_text}"
+            conversation_history += f"\nQwen: {response}"
+
+            # -------- SPEAK RESPONSE --------
+
+            clean_response = response.replace('"', "")
+
+            subprocess.run(
+                f'echo "{clean_response}" | espeak --stdout | aplay -D plughw:2,0',
+                shell=True
             )
 
+            # -------- STOP COMMAND --------
+
             if "stop" in user_text.lower():
+
+                print("Summarizing conversation...")
+
+                summary_prompt = f"""
+Summarize this conversation in short bullet points.
+
+Do not include:
+- terminal codes
+- metadata
+- thinking traces
+- formatting artifacts
+
+Conversation:
+
+{conversation_history}
+"""
+
+                summary_result = subprocess.run(
+                    ["ollama", "run", "qwen3:0.6b", summary_prompt],
+                    capture_output=True,
+                    text=True
+                )
+
+                summary = summary_result.stdout.strip()
+
+                # -------- CLEAN TERMINAL GARBAGE --------
+
+                summary = re.sub(
+                    r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])',
+                    '',
+                    summary
+                )
+
+                summary = re.sub(
+                    r'\[\d*[A-Za-z]',
+                    '',
+                    summary
+                )
+
+                summary = re.sub(r' +', ' ', summary)
+
+                summary = "\n".join(
+                    line.strip()
+                    for line in summary.splitlines()
+                    if line.strip()
+                )
+
+                print("\n===== SUMMARY =====")
+                print(summary)
+                print("===================\n")
+
+                # -------- EMAIL --------
+
+                msg = MIMEText(summary)
+
+                msg["Subject"] = "Qwen Conversation Summary"
+                msg["From"] = EMAIL_ADDRESS
+                msg["To"] = RECIPIENT_EMAIL
+
+                server = smtplib.SMTP(
+                    "smtp.gmail.com",
+                    587
+                )
+
+                server.starttls()
+
+                server.login(
+                    EMAIL_ADDRESS,
+                    EMAIL_PASSWORD
+                )
+
+                server.sendmail(
+                    EMAIL_ADDRESS,
+                    RECIPIENT_EMAIL,
+                    msg.as_string()
+                )
+
+                server.quit()
+
+                print("Email sent.")
                 print("Conversation ended.")
+
                 break
