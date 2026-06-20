@@ -1,4 +1,4 @@
-# Voice-Activation-Qwen-Using-Q5-Speaker-in-Python
+# Qwen Conversation With Conversation Summary
 
 ```#Go into an enviroment
 * In bash:
