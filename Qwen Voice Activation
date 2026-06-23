@@ -62,7 +62,7 @@ while True:
 
     print("Volume:", volume)
 
-    if volume < 0.2:
+    if volume < 0.1:
         print("Too quiet, ignoring...")
         continue
 
@@ -104,7 +104,7 @@ while True:
 
             print("Volume:", volume)
 
-            if volume < 0.2:
+            if volume < 0.1:
                 print("Too quiet, ignoring...")
                 continue
 
